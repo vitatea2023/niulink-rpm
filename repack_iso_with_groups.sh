@@ -50,14 +50,16 @@ run_cmd() {
 }
 
 # Check parameters
-if [ $# -ne 2 ]; then
-    echo "Usage: $0 <original_iso_file> <rpm_file>"
+if [ $# -lt 2 ]; then
+    echo "Usage: $0 <original_iso_file> <rpm_file1> [rpm_file2] [rpm_file3] ..."
     echo "Example: $0 NiuLinkOS-v1.1.7-2411141913.iso upload-pulse-1.0.0-1.el7.x86_64.rpm"
+    echo "Example: $0 NiuLinkOS-v1.1.7-2411141913.iso pkg1.rpm pkg2.rpm pkg3.rpm"
     exit 1
 fi
 
 ORIGINAL_ISO="$1"
-RPM_FILE="$2"
+shift  # Remove first argument (ISO file)
+RPM_FILES=("$@")  # Store all remaining arguments as RPM files array
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$SCRIPT_DIR/iso_repack_work_groups"
 OUTPUT_ISO="${ORIGINAL_ISO%.*}-repack-groups.iso"
@@ -72,14 +74,20 @@ if [ ! -f "$ORIGINAL_ISO" ]; then
     exit 1
 fi
 
-if [ ! -f "$RPM_FILE" ]; then
-    log_error "RPM file does not exist: $RPM_FILE"
-    exit 1
-fi
+# Check all RPM files exist
+for rpm_file in "${RPM_FILES[@]}"; do
+    if [ ! -f "$rpm_file" ]; then
+        log_error "RPM file does not exist: $rpm_file"
+        exit 1
+    fi
+done
 
 log_info "Starting NiuLink ISO repack with package group integration"
 log_info "Input ISO: $ORIGINAL_ISO"
-log_info "RPM file: $RPM_FILE"
+log_info "RPM files to integrate: ${#RPM_FILES[@]} files"
+for i in "${!RPM_FILES[@]}"; do
+    log_info "  RPM $((i+1)): ${RPM_FILES[i]}"
+done
 log_info "Output ISO: $OUTPUT_ISO"
 log_info "Work directory: $WORK_DIR"
 log_info "Log file: $LOG_FILE"
@@ -118,21 +126,40 @@ log_info "Extracting ISO content..."
 run_cmd "xorriso -osirrox on -indev '$SCRIPT_DIR/$ORIGINAL_ISO' -extract / ./" "Extract ISO content"
 log_success "ISO content extracted successfully"
 
-# Copy RPM to Packages directory
-log_info "Adding RPM package to Packages directory..."
-run_cmd "cp '$SCRIPT_DIR/$RPM_FILE' ./Packages/" "Copy RPM to Packages directory"
-log_success "RPM package copied to Packages directory"
+# Copy all RPM packages to Packages directory
+log_info "Adding ${#RPM_FILES[@]} RPM packages to Packages directory..."
+for rpm_file in "${RPM_FILES[@]}"; do
+    rpm_basename=$(basename "$rpm_file")
+    log_info "  Copying: $rpm_basename"
+    run_cmd "cp '$SCRIPT_DIR/$rpm_file' ./Packages/" "Copy $rpm_basename to Packages directory"
+done
+log_success "All RPM packages copied to Packages directory"
 
-# Count original packages
-ORIG_PKG_COUNT=$(ls -1 ./Packages/*.rpm | wc -l)
-log_info "Total packages now: $ORIG_PKG_COUNT (including upload-pulse)"
+# Count packages after adding new RPMs
+NEW_PKG_COUNT=$(ls -1 ./Packages/*.rpm | wc -l)
+log_info "Total packages now: $NEW_PKG_COUNT (including ${#RPM_FILES[@]} new packages)"
+
+# Extract package names from RPM files for later use
+PACKAGE_NAMES=()
+for rpm_file in "${RPM_FILES[@]}"; do
+    # Extract package name from RPM filename (remove version, arch, extension)
+    pkg_name=$(rpm -qp --queryformat '%{NAME}' "$SCRIPT_DIR/$rpm_file" 2>/dev/null || {
+        # Fallback: extract from filename if rpm command fails
+        basename "$rpm_file" | sed 's/-[0-9].*\.rpm$//' | sed 's/-[0-9].*\.el[0-9].*\.rpm$//'
+    })
+    PACKAGE_NAMES+=("$pkg_name")
+    log_info "  Package name extracted: $pkg_name"
+done
 
 # Update Packages repository metadata
 log_info "Updating Packages repository metadata..."
 run_cmd "createrepo_c --update ./Packages" "Update Packages repository metadata"
 
-# CRITICAL: Modify comps.xml to include upload-pulse in a default group
-log_info "Modifying package groups to include upload-pulse..."
+# CRITICAL: Modify comps.xml to include all custom packages in default groups
+log_info "Modifying package groups to include ${#PACKAGE_NAMES[@]} custom packages..."
+for pkg_name in "${PACKAGE_NAMES[@]}"; do
+    log_info "  Will add package: $pkg_name"
+done
 
 # Find the main comps.xml file
 COMPS_FILE=$(find ./repodata -name "*c7-x86_64-comps.xml" | grep -v ".gz" | head -1)
@@ -142,29 +169,44 @@ if [ -n "$COMPS_FILE" ]; then
     # Backup original comps.xml
     run_cmd "cp '$COMPS_FILE' '$COMPS_FILE.backup'" "Backup original comps.xml"
     
-    # Add upload-pulse to the 'core' group which is default=true
-    log_info "Adding upload-pulse to core package group..."
+    # Add all custom packages to the 'core' group which is default=true
+    log_info "Adding ${#PACKAGE_NAMES[@]} packages to core package group..."
     
-    # Find the core group packagelist and add upload-pulse before the closing tag
-    # We'll add it as a mandatory package to ensure it gets installed
-    sed -i '/<id>core<\/id>/,/<\/packagelist>/ {
-        /<\/packagelist>/ i\      <packagereq type="mandatory">upload-pulse</packagereq>
-    }' "$COMPS_FILE"
+    # Find the core group packagelist and add all packages before the closing tag
+    # We'll add them as mandatory packages to ensure they get installed
+    for pkg_name in "${PACKAGE_NAMES[@]}"; do
+        log_info "  Adding $pkg_name to core group"
+        sed -i '/<id>core<\/id>/,/<\/packagelist>/ {
+            /<\/packagelist>/ i\      <packagereq type="mandatory">'"$pkg_name"'</packagereq>
+        }' "$COMPS_FILE"
+    done
     
-    # Verify the modification
-    if grep -q 'upload-pulse' "$COMPS_FILE"; then
-        log_success "upload-pulse successfully added to core package group"
-    else
-        log_error "Failed to add upload-pulse to core package group"
+    # Verify all packages were added
+    ALL_ADDED=true
+    for pkg_name in "${PACKAGE_NAMES[@]}"; do
+        if grep -q "$pkg_name" "$COMPS_FILE"; then
+            log_success "  $pkg_name successfully added to core package group"
+        else
+            log_error "  Failed to add $pkg_name to core package group"
+            ALL_ADDED=false
+        fi
+    done
+    
+    if [ "$ALL_ADDED" = false ]; then
+        log_error "Failed to add some packages to core package group"
         exit 1
     fi
     
-    # Also add to minimal environment for good measure
-    sed -i '/<id>minimal<\/id>/,/<\/packagelist>/ {
-        /<\/packagelist>/ i\      <packagereq type="mandatory">upload-pulse</packagereq>
-    }' "$COMPS_FILE"
+    # Also add all packages to minimal environment for good measure
+    log_info "Adding ${#PACKAGE_NAMES[@]} packages to minimal environment..."
+    for pkg_name in "${PACKAGE_NAMES[@]}"; do
+        log_info "  Adding $pkg_name to minimal environment"
+        sed -i '/<id>minimal<\/id>/,/<\/packagelist>/ {
+            /<\/packagelist>/ i\      <packagereq type="mandatory">'"$pkg_name"'</packagereq>
+        }' "$COMPS_FILE"
+    done
     
-    log_info "Modified comps.xml to include upload-pulse in default installation groups"
+    log_info "Modified comps.xml to include all custom packages in default installation groups"
     
 else
     log_error "Could not find comps.xml file"
@@ -183,18 +225,38 @@ log_info "Updated package counts:"
 log_info "  Root repository: $NEW_ROOT_PKGS packages"
 log_info "  Packages repository: $NEW_PKG_PKGS packages"
 
-# Verify upload-pulse is in root repository and package groups
-if zcat ./repodata/*primary.xml.gz | grep -q "upload-pulse"; then
-    log_success "✅ upload-pulse package found in root repository metadata"
-else
-    log_error "❌ upload-pulse package NOT found in root repository metadata"
+# Verify all custom packages are in root repository and package groups
+log_info "Verifying ${#PACKAGE_NAMES[@]} custom packages integration..."
+
+# Check root repository
+ALL_IN_REPO=true
+for pkg_name in "${PACKAGE_NAMES[@]}"; do
+    if zcat ./repodata/*primary.xml.gz | grep -q "$pkg_name"; then
+        log_success "✅ $pkg_name package found in root repository metadata"
+    else
+        log_error "❌ $pkg_name package NOT found in root repository metadata"
+        ALL_IN_REPO=false
+    fi
+done
+
+if [ "$ALL_IN_REPO" = false ]; then
+    log_error "Some packages are not in root repository metadata"
     exit 1
 fi
 
-if grep -q 'upload-pulse' "$COMPS_FILE"; then
-    log_success "✅ upload-pulse package added to package groups"
-else
-    log_error "❌ upload-pulse package NOT in package groups"
+# Verify all packages are in package groups  
+ALL_IN_GROUPS=true
+for pkg_name in "${PACKAGE_NAMES[@]}"; do
+    if grep -q "$pkg_name" "$COMPS_FILE"; then
+        log_success "✅ $pkg_name package added to package groups"
+    else
+        log_error "❌ $pkg_name package NOT in package groups"
+        ALL_IN_GROUPS=false
+    fi
+done
+
+if [ "$ALL_IN_GROUPS" = false ]; then
+    log_error "Some packages are not in package groups"
     exit 1
 fi
 
@@ -329,15 +391,24 @@ echo "    ISO Repack with Groups Completed Successfully" | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"
 echo "Input ISO: $ORIGINAL_ISO" | tee -a "$LOG_FILE"
 echo "Output ISO: $OUTPUT_ISO" | tee -a "$LOG_FILE"
-echo "Added RPM: $RPM_FILE" | tee -a "$LOG_FILE"
+echo "Added RPMs: ${#RPM_FILES[@]} files" | tee -a "$LOG_FILE"
+for i in "${!RPM_FILES[@]}"; do
+    echo "  RPM $((i+1)): $(basename "${RPM_FILES[i]}")" | tee -a "$LOG_FILE"
+done
 echo "File size: $(du -h "$OUTPUT_ISO" | cut -f1)" | tee -a "$LOG_FILE"
 echo "Log file: $LOG_FILE" | tee -a "$LOG_FILE"
 echo | tee -a "$LOG_FILE"
 echo "Package integration:" | tee -a "$LOG_FILE"
-echo "  Total packages: $ORIG_PKG_COUNT" | tee -a "$LOG_FILE"
+echo "  Total packages: $NEW_PKG_COUNT" | tee -a "$LOG_FILE"
 echo "  Root repository: $NEW_ROOT_PKGS packages" | tee -a "$LOG_FILE"
-echo "  upload-pulse added to 'core' package group" | tee -a "$LOG_FILE"
-echo "  upload-pulse added to 'minimal' environment" | tee -a "$LOG_FILE"
+echo "  Integrated packages added to 'core' package group:" | tee -a "$LOG_FILE"
+for pkg_name in "${PACKAGE_NAMES[@]}"; do
+    echo "    - $pkg_name" | tee -a "$LOG_FILE"
+done
+echo "  Integrated packages added to 'minimal' environment:" | tee -a "$LOG_FILE"
+for pkg_name in "${PACKAGE_NAMES[@]}"; do
+    echo "    - $pkg_name" | tee -a "$LOG_FILE"
+done
 echo | tee -a "$LOG_FILE"
 echo "Applied fixes:" | tee -a "$LOG_FILE"
 echo "✅ UEFI boot errors fixed" | tee -a "$LOG_FILE"
@@ -345,8 +416,8 @@ echo "✅ fedora.py EFI directory corrected" | tee -a "$LOG_FILE"
 echo "✅ fedora install class hidden" | tee -a "$LOG_FILE"
 echo "✅ CentOS install class always visible" | tee -a "$LOG_FILE"
 echo "✅ System identification confirmed as CentOS" | tee -a "$LOG_FILE"
-echo "✅ RPM package integrated into repository" | tee -a "$LOG_FILE"
-echo "✅ RPM package added to mandatory installation groups" | tee -a "$LOG_FILE"
+echo "✅ ${#RPM_FILES[@]} RPM packages integrated into repository" | tee -a "$LOG_FILE"
+echo "✅ All RPM packages added to mandatory installation groups" | tee -a "$LOG_FILE"
 echo "✅ Package groups (comps.xml) updated" | tee -a "$LOG_FILE"
 echo "✅ Supports UEFI + Legacy BIOS dual boot" | tee -a "$LOG_FILE"
 echo | tee -a "$LOG_FILE"
@@ -355,19 +426,22 @@ echo "• No more '/boot/efi/EFI/fedora/user.cfg' errors" | tee -a "$LOG_FILE"
 echo "• UEFI installation will complete normally" | tee -a "$LOG_FILE"
 echo "• Supports Secure Boot environments" | tee -a "$LOG_FILE"
 echo "• Installation source will work correctly" | tee -a "$LOG_FILE"
-echo "• upload-pulse will be AUTOMATICALLY INSTALLED as mandatory package" | tee -a "$LOG_FILE"
+echo "• All integrated packages will be AUTOMATICALLY INSTALLED as mandatory packages:" | tee -a "$LOG_FILE"
+for pkg_name in "${PACKAGE_NAMES[@]}"; do
+    echo "  - $pkg_name" | tee -a "$LOG_FILE"
+done
 echo "• Software selection will show correct package count" | tee -a "$LOG_FILE"
-echo "• upload-pulse service should start automatically after installation" | tee -a "$LOG_FILE"
+echo "• All integrated services should start automatically after installation" | tee -a "$LOG_FILE"
 echo | tee -a "$LOG_FILE"
 echo "Usage:" | tee -a "$LOG_FILE"
 echo "1. Use $OUTPUT_ISO to create installation media" | tee -a "$LOG_FILE"
 echo "2. Supports both UEFI and Legacy BIOS boot" | tee -a "$LOG_FILE"
 echo "3. Select CentOS installation option during setup" | tee -a "$LOG_FILE"
-echo "4. upload-pulse will be installed automatically" | tee -a "$LOG_FILE"
+echo "4. All integrated packages will be installed automatically" | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"
 
 echo "===== NiuLink ISO Repack Groups Log Completed at $(date) =====" >> "$LOG_FILE"
 
-log_success "All operations completed successfully! upload-pulse should now be installed automatically."
+log_success "All operations completed successfully! All ${#PACKAGE_NAMES[@]} integrated packages should now be installed automatically."
 
 

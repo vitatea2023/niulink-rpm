@@ -356,8 +356,8 @@ log_info "Repacking squashfs filesystem..."
 run_cmd "sudo mksquashfs rootfs LiveOS/squashfs.img -comp xz -noappend" "Repack squashfs"
 log_success "squashfs repacked successfully"
 
-# Create final ISO
-log_info "Creating final ISO with package group integration..."
+# Create final ISO with integrated USB boot compatibility
+log_info "Creating final ISO with package group integration and USB boot support..."
 run_cmd "sudo xorriso -as mkisofs \\
     -o '$SCRIPT_DIR/$OUTPUT_ISO' \\
     -b isolinux/isolinux.bin \\
@@ -369,8 +369,9 @@ run_cmd "sudo xorriso -as mkisofs \\
     -e images/efiboot.img \\
     -no-emul-boot \\
     -isohybrid-gpt-basdat \\
+    --protective-msdos-label \\
     -V 'ISOCDROM' \\
-    ." "Create final ISO"
+    ." "Create final ISO with integrated USB boot support"
 
 if [ $? -eq 0 ]; then
     log_success "ISO created successfully: $OUTPUT_ISO"
@@ -420,12 +421,16 @@ echo "✅ ${#RPM_FILES[@]} RPM packages integrated into repository" | tee -a "$L
 echo "✅ All RPM packages added to mandatory installation groups" | tee -a "$LOG_FILE"
 echo "✅ Package groups (comps.xml) updated" | tee -a "$LOG_FILE"
 echo "✅ Supports UEFI + Legacy BIOS dual boot" | tee -a "$LOG_FILE"
+echo "✅ USB boot compatibility integrated (isohybrid MBR partition table)" | tee -a "$LOG_FILE"
 echo | tee -a "$LOG_FILE"
 echo "Expected results:" | tee -a "$LOG_FILE"
 echo "• No more '/boot/efi/EFI/fedora/user.cfg' errors" | tee -a "$LOG_FILE"
 echo "• UEFI installation will complete normally" | tee -a "$LOG_FILE"
 echo "• Supports Secure Boot environments" | tee -a "$LOG_FILE"
 echo "• Installation source will work correctly" | tee -a "$LOG_FILE"
+echo "• USB boot compatibility: Works with BalenaEtcher and other USB burning tools" | tee -a "$LOG_FILE"
+echo "• Physical machine USB boot: No more 'partition table not found' errors" | tee -a "$LOG_FILE"
+echo "• MBR partition table: Proper isohybrid structure for USB boot" | tee -a "$LOG_FILE"
 echo "• All integrated packages will be AUTOMATICALLY INSTALLED as mandatory packages:" | tee -a "$LOG_FILE"
 for pkg_name in "${PACKAGE_NAMES[@]}"; do
     echo "  - $pkg_name" | tee -a "$LOG_FILE"
@@ -436,12 +441,13 @@ echo | tee -a "$LOG_FILE"
 echo "Usage:" | tee -a "$LOG_FILE"
 echo "1. Use $OUTPUT_ISO to create installation media" | tee -a "$LOG_FILE"
 echo "2. Supports both UEFI and Legacy BIOS boot" | tee -a "$LOG_FILE"
-echo "3. Select CentOS installation option during setup" | tee -a "$LOG_FILE"
-echo "4. All integrated packages will be installed automatically" | tee -a "$LOG_FILE"
+echo "3. USB/Physical boot: Use BalenaEtcher or dd to write to USB drive" | tee -a "$LOG_FILE"
+echo "4. Select CentOS installation option during setup" | tee -a "$LOG_FILE"
+echo "5. All integrated packages will be installed automatically" | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"
 
 echo "===== NiuLink ISO Repack Groups Log Completed at $(date) =====" >> "$LOG_FILE"
 
-log_success "All operations completed successfully! All ${#PACKAGE_NAMES[@]} integrated packages should now be installed automatically."
+log_success "All operations completed successfully! All ${#PACKAGE_NAMES[@]} integrated packages should now be installed automatically. ISO includes integrated USB boot support."
 
 

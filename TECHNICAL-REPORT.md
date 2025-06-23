@@ -25,6 +25,11 @@
    - 解决：修复anaconda安装类配置
    - 关键：确保CentOS安装类优先级和EFI目录正确
 
+4. **USB物理设备启动兼容性**
+   - 挑战：ISO在虚拟机正常但USB写入后物理机报错"分区表未找到"
+   - 解决：使用xorriso添加isohybrid MBR分区表支持
+   - 关键：在ISO生成后添加partition_table=on参数
+
 ## 技术架构分析
 
 ### ISO文件结构
@@ -125,6 +130,22 @@ for pkg_name in "${PACKAGE_NAMES[@]}"; do
 done
 ```
 
+### 第五阶段：USB启动兼容性集成（最终完善）
+
+```bash
+# 优化方案：在ISO创建时直接集成USB启动支持
+xorriso -as mkisofs \
+    -o output.iso \
+    -b isolinux/isolinux.bin \
+    -c isolinux/boot.cat \
+    --protective-msdos-label \
+    -isohybrid-gpt-basdat \
+    ...
+```
+
+**结果**: 一步完成，无需额外修复步骤
+**关键**: 使用`--protective-msdos-label`在创建时就添加MBR分区表
+
 ## 核心技术实现
 
 ### 智能包名提取
@@ -170,6 +191,24 @@ sed -i '/productName\.startswith("Red Hat")/,+1c\
 
 # 确保CentOS安装类可见
 sed -i 's/if not productName\.startswith("CentOS"):/if False:/' centos.py
+```
+
+### USB启动兼容性集成
+
+```bash
+# 在ISO创建时直接集成USB启动支持
+xorriso -as mkisofs \
+    -o output.iso \
+    -b isolinux/isolinux.bin \
+    -c isolinux/boot.cat \
+    --protective-msdos-label \
+    -isohybrid-gpt-basdat \
+    -no-emul-boot \
+    -boot-info-table \
+    ...
+
+# 验证集成效果
+fdisk -l output.iso  # 应显示分区表信息
 ```
 
 ### 批量验证机制
@@ -220,6 +259,11 @@ done
    - 确保CentOS安装类优先级
    - 维护双启动兼容性
 
+5. **USB启动兼容性集成**：
+   - 在ISO创建时直接集成MBR分区表支持
+   - 使用--protective-msdos-label参数一步完成
+   - 支持BalenaEtcher等USB烧录工具
+
 ### 避免的陷阱
 
 1. **仅Repository操作**：
@@ -237,6 +281,14 @@ done
 4. **UEFI兼容性忽略**：
    - 错误：不处理UEFI启动问题
    - 正确：主动修复已知的UEFI问题
+
+5. **USB启动兼容性忽略**：
+   - 错误：仅考虑虚拟机启动，忽略物理设备需求
+   - 正确：在ISO创建时直接集成MBR分区表支持
+
+6. **多步骤修复**：
+   - 错误：先创建ISO再单独修复USB启动问题
+   - 正确：使用--protective-msdos-label在创建时一步完成
 
 ## 性能和扩展性
 

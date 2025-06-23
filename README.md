@@ -14,6 +14,7 @@
 - ✅ **强制安装保证**: 包被添加到mandatory包组，确保自动安装
 - ✅ **UEFI兼容**: 修复UEFI启动问题，支持Secure Boot
 - ✅ **双启动支持**: 同时支持UEFI和Legacy BIOS启动
+- ✅ **USB启动兼容**: 修复USB物理设备启动问题，支持BalenaEtcher等工具
 - ✅ **批量验证**: 自动验证所有包的集成状态
 - ✅ **详细日志**: 完整的操作日志记录
 
@@ -83,6 +84,7 @@ sudo ./repack_iso_with_groups.sh RHEL-8.5-x86_64-dvd.iso \\
 2. **包组集成**: 将自定义包添加到`core`和`minimal`包组
 3. **强制安装**: 使用`mandatory`类型确保包被自动安装
 4. **UEFI修复**: 修复CentOS/RHEL的UEFI启动问题
+5. **USB启动修复**: 添加isohybrid MBR分区表支持，确保USB物理设备启动兼容
 
 ### 关键步骤
 
@@ -92,7 +94,7 @@ sudo ./repack_iso_with_groups.sh RHEL-8.5-x86_64-dvd.iso \\
 4. 提取包名并修改comps.xml
 5. 更新根级repository包含包组信息
 6. 应用UEFI启动修复
-7. 重新打包ISO
+7. 重新打包ISO（集成USB启动兼容性支持）
 
 ### 包组策略
 
@@ -129,6 +131,7 @@ sudo ./repack_iso_with_groups.sh RHEL-8.5-x86_64-dvd.iso \\
 使用生成的ISO安装系统时：
 - ✅ 所有集成的RPM包会被自动安装
 - ✅ 支持UEFI和Legacy BIOS双重启动
+- ✅ 支持USB物理设备启动（BalenaEtcher兼容）
 - ✅ 无需手动干预，全自动安装
 - ✅ 包服务会在安装后自动启动
 
@@ -181,7 +184,11 @@ sed -i '/<id>core<\/id>/,/<\/packagelist>/ {
    - 确保原始ISO完整且未损坏
    - 检查工作目录权限和磁盘空间
 
-3. **依赖冲突**
+3. **USB启动"分区表未找到"错误**
+   - 使用`fdisk -l 镜像.iso`检查分区表结构
+   - 确保镜像包含isohybrid MBR分区表
+
+4. **依赖冲突**
    - 使用`rpm -qpR`检查包依赖
    - 确保所有依赖包已存在于原始ISO中
 
